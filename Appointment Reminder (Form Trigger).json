@@ -1,0 +1,200 @@
+{
+  "name": "Appointment Reminder (Form Trigger)",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Helper function\nfunction safe(v) {\n  return v === null || v === undefined ? \"\" : v.toString().trim();\n}\n\n// Helper to combine name\nfunction formatName(first, middle, last) {\n  first = safe(first);\n  middle = safe(middle);\n  last = safe(last);\n\n  let middleInitial = middle ? middle.charAt(0).toUpperCase() + \".\" : \"\";\n  let fullName = last ? last : first; // fallback if last name missing\n  if (first) fullName += \", \" + first;\n  if (middleInitial) fullName += \" \" + middleInitial;\n  return fullName || \"Patient\";\n}\n\n// Process all input items\nreturn items.map(item => {\n  const $json = item.json;\n  \n  const firstName = safe($json[\"First Name\"]);\n  const middleName = safe($json[\"Middle Name\"]);\n  const lastName = safe($json[\"Last Name\"]);\n  const email = safe($json[\"Email Address\"]);\n  const timestamp = safe($json[\"Timestamp\"]);\n  const appointmentDate = safe($json[\"Appointment Date\"]);\n  const appointmentTime = safe($json[\"Appointment Time\"]);\n  const status = safe($json[\"Status\"]).toLowerCase();\n\n  // Skip rows with no email\n  if (!email) return null;\n\n  // Skip already processed\n  if (status === \"done\" || status === \"sent\") return null;\n\n  // Normalize email\n  $json[\"Email Address Normalized\"] = email.toLowerCase();\n\n  // Combine full name\n  $json[\"Customer Name\"] = formatName(firstName, middleName, lastName);\n\n  // Format Timestamp (Excel number to date)\n  if (timestamp) {\n    const tsNum = Number(timestamp);\n    if (!isNaN(tsNum)) {\n      const tsDate = new Date((tsNum - 25569) * 86400 * 1000);\n      $json[\"Timestamp\"] = tsDate.toLocaleDateString(\"en-US\");\n    } else $json[\"Timestamp\"] = \"\";\n  } else $json[\"Timestamp\"] = \"\";\n\n  // Format Appointment Date (Excel number to date or text)\n  if (appointmentDate) {\n    const appDateNum = Number(appointmentDate);\n    if (!isNaN(appDateNum)) {\n      const appDateObj = new Date((appDateNum - 25569) * 86400 * 1000);\n      $json[\"Appointment Date\"] = appDateObj.toLocaleDateString(\"en-US\");\n    } else $json[\"Appointment Date\"] = appointmentDate; // keep text\n  } else $json[\"Appointment Date\"] = \"\";\n\n  // Format Appointment Time\n  if (appointmentTime) {\n    const timeFraction = Number(appointmentTime);\n    if (!isNaN(timeFraction)) {\n      // Excel numeric time\n      const totalSeconds = timeFraction * 24 * 60 * 60;\n      const hours = Math.floor(totalSeconds / 3600);\n      const minutes = Math.floor((totalSeconds % 3600) / 60);\n      const date = new Date();\n      date.setHours(hours, minutes, 0);\n      $json[\"Appointment Time\"] = date.toLocaleTimeString(\"en-US\", { hour: 'numeric', minute: '2-digit', hour12: true });\n    } else {\n      // Already text, just use it\n      $json[\"Appointment Time\"] = appointmentTime;\n    }\n  } else $json[\"Appointment Time\"] = \"\";\n\n  // Row ID for later update\n  $json[\"row_id\"] = $json[\"row_number\"] || $json[\"Timestamp\"];\n\n  return { json: $json };\n})\n.filter(item => item !== null);\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1376,
+        -496
+      ],
+      "id": "9fbc6a90-2220-4dbd-98b2-ec207c034e02",
+      "name": "Validate Row",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function safe(v) {\n  return v === null || v === undefined ? \"\" : v.toString().trim();\n}\n\nconst name = safe($json[\"Customer Name\"]) || \"Patient\";\nconst date = safe($json[\"Appointment Date\"]);\nconst time = safe($json[\"Appointment Time \"]);\nconst faq = safe($json[\"FAQ Question \"]);\n\nconst contentLine = faq\n  ? `Question: ${faq}`\n  : date && time\n  ? `Appointment: ${date} at ${time}`\n  : \"\";\n\n$json.ai_prompt = `\nONLY the email text. DO NOT include \"Here’s the output\", \"Subject:\", or any extra lines.\n\nCustomer: ${name}\n${contentLine}\n\nRULES:\n- Start with a polite greeting and introduce yourself, and the name is generated, not like \"Your name\"\n- Answer clearly and helpfully\n- Include a friendly note\n- Encourage replies\n- End with a warm closing\n- Keep it concise and natural\n- imagine like a dental clinic make it like as if your professional dentist not like ai made, and start like \"Hi this is\" and as if the Dental clinic name is Healthy Gum and include like a reminder for an appointment with date and time \n\nOUTPUT ONLY the email content.\n`.trim();\n\nreturn { json: $json };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        -496
+      ],
+      "id": "ecf0105b-10a0-4ce8-b82d-b0554a470923",
+      "name": "Build AI Prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.ollama_body}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -816,
+        -496
+      ],
+      "id": "02fa8c5a-c552-41c2-9509-f9673e73a3ae",
+      "name": "Generate Email"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Validate Row').item.json[\"Email Address Normalized\"] }}",
+        "subject": "={{$json[\"FAQ Question \"] && $json[\"FAQ Question \"] !== \"\" ? \"Response from AIAH Dental\" : \"Your Dental Appointment Reminder\"}}",
+        "emailType": "text",
+        "message": "={{ $json.response }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -624,
+        -496
+      ],
+      "id": "0fcbabd7-f110-402a-b6fb-9e1158bf89ba",
+      "name": "Send Email",
+      "webhookId": "6d65f6aa-c766-4df2-a3ba-2bd0568fb6e6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "jWbz4mtX3AAk0pw7",
+          "name": "Gmail account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1-N2k8eR9Kd1sfvu-nrrvNIws2VgWKSUt3_1vLoIjE9o",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1703051974,
+          "mode": "list",
+          "cachedResultName": "Form responses 1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1-N2k8eR9Kd1sfvu-nrrvNIws2VgWKSUt3_1vLoIjE9o/edit#gid=1703051974"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1584,
+        -496
+      ],
+      "id": "4ac18a38-1cf0-4033-adcf-44d8865f12c9",
+      "name": "Google Sheets Trigger1",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "0IaXMiuEZXX17hqr",
+          "name": "Google Sheets Trigger account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({\n  json: {\n    ollama_body: {\n      model: \"llama3:8b\",\n      prompt: item.json.ai_prompt, \n      stream: false\n    }\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1008,
+        -496
+      ],
+      "id": "1317784d-bae2-443c-b517-806bd7aad62f",
+      "name": "convert to json"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Validate Row": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "convert to json",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        []
+      ]
+    },
+    "Google Sheets Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Validate Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert to json": {
+      "main": [
+        [
+          {
+            "node": "Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "57c41726-75b1-4d9d-904e-e92f8844fc8b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f3a9bfdfd970a52da47bec8aa69633791c7b34826ee0ab21bab31fa55f8b3b3b"
+  },
+  "id": "GitXinkn3oeGvNEC",
+  "tags": []
+}
