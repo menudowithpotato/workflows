@@ -1,0 +1,867 @@
+{
+  "name": "Amazon Catalog Auto-Update",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "sheetId": "16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0",
+        "range": "Sheet1!A1:O",
+        "options": {}
+      },
+      "name": "Read Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        560,
+        1072
+      ],
+      "id": "4a95bdfc-5d86-4324-800b-d99fd4639bdc",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "c9r2JTnKzCZNOGXy",
+          "name": "GoogleSheets_Ollama"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {
+          "reset": false
+        }
+      },
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        768,
+        1072
+      ],
+      "id": "3abc347c-36c1-4b7d-9770-2329d157462b"
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.filter(i => i.json['AMAZON URL'] && i.json['AMAZON URL'].trim() !== '');"
+      },
+      "name": "Filter Rows with URL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        960,
+        1072
+      ],
+      "id": "3a3c443b-b81b-474a-9448-157246667bcc"
+    },
+    {
+      "parameters": {
+        "url": "={{$json['AMAZON URL']}}",
+        "responseFormat": "string",
+        "jsonParameters": true,
+        "options": {},
+        "headerParametersJson": "{\n  \"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36\",\n  \"Accept-Language\": \"en-US,en;q=0.9\",\n  \"Accept\": \"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\"\n}\n"
+      },
+      "name": "Fetch Amazon Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        1072
+      ],
+      "id": "0d5a1295-b329-4130-a39d-e2d65d5e77d6"
+    },
+    {
+      "parameters": {
+        "functionCode": "const html = $json.data || '';\nlet amazonURL = $json['AMAZON URL'] || '';\n\n// Helper to extract string between two markers\nfunction getBetween(str, start, end) {\n  const s = str.indexOf(start);\n  if (s === -1) return '';\n  const e = str.indexOf(end, s + start.length);\n  if (e === -1) return '';\n  return str.substring(s + start.length, e).trim();\n}\n\n// Clean text\nfunction clean(text) {\n  if (!text) return '';\n  return text.replace(/<[^>]*>/g, '').replace(/\\s+/g, ' ').trim();\n}\n\n// Generate dynamic notes based on product description and pack quantity\nfunction generateNotes(desc, packQty) {\n  desc = desc.toLowerCase();\n\n  if (desc.includes('capsule') || desc.includes('tablet') || desc.includes('oz') || desc.includes('ml')) {\n    const match = desc.match(/(\\d+)\\s?(capsules?|oz|ml|fl\\s?oz)/i);\n    if (match) return `(${match[1]} ${match[2]} = ${packQty} unit${packQty > 1 ? 's' : ''})`;\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  } else if (desc.includes('book')) {\n    return `Pack of ${packQty} copy${packQty > 1 ? 'ies' : ''}`;\n  } else if (desc.includes('phone') || desc.includes('ipad') || desc.includes('laptop')) {\n    return `Pack of ${packQty} device${packQty > 1 ? 's' : ''}`;\n  } else {\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  }\n}\n\n// Extract LongDesc\nlet longDesc = getBetween(html, '<span id=\"productTitle\"', '</span>') ||\n               getBetween(html, '<span class=\"a-size-large product-title-word-break\"', '</span>') ||\n               $json['LongDesc'] || '';\nlongDesc = clean(longDesc);\n\n// Product title short\nlet productTitle = longDesc.split(/,|for/i)[0].trim() || $json['PRODUCT TITLE'];\n\n// Extract ASIN\nlet asin = getBetween(html, 'data-asin=\"', '\"') || '';\nif (!asin && amazonURL) {\n  const match = amazonURL.match(/\\/dp\\/([A-Z0-9]{10})/);\n  if (match) asin = match[1];\n}\n\n// Generate Amazon URL if missing\nif (!amazonURL && asin) amazonURL = `https://www.amazon.com/dp/${asin}`;\n\n// Supplier Cost\nlet supplierCost = Number($json['SUPPLIER COST (1 unit)']) || 8.49;\n\n// Extract Manufacturer, CatgDesc, SubCtDsc\nlet manufacturer = $json['Manufacturer'] || '';\nlet catgDesc = $json['CatgDesc'] || '';\nlet subCtDsc = $json['SubCtDsc'] || '';\n\n// Extract pack variants\nlet variantRows = [];\nconst packMatches = [...html.matchAll(/(\\d+\\s?FL\\s?Oz).*?Pack of (\\d+).*?\\$([\\d.,]+)/gi)];\n\nif (packMatches.length === 0) {\n  // Single variant fallback\n  let customerPrice = ($json['Customer Price'] || '').toString().replace(/[^0-9.]/g, '');\n  variantRows.push({\n    json: {\n      \"LongDesc\": longDesc,\n      \"Customer Price\": customerPrice,\n      \"AMAZON ASIN\": asin,\n      \"PRODUCT TITLE\": productTitle,\n      \"AMAZON URL\": amazonURL || 'NO URL',\n      \"SUPPLIER COST (1 unit)\": supplierCost,\n      \"PACK QTY\": 1,\n      \"TOTAL COST\": (supplierCost * 1).toFixed(2),\n      \"NOTES\": generateNotes(longDesc, 1),\n      \"Manufacturer\": manufacturer,\n      \"CatgDesc\": catgDesc,\n      \"SubCtDsc\": subCtDsc\n    }\n  });\n} else {\n  // Multiple variants\n  for (let i = 0; i < packMatches.length; i++) {\n    const m = packMatches[i];\n    const packQty = Number(m[2]);\n    const customerPrice = m[3].replace(/[^0-9.]/g, '');\n    const totalCost = (supplierCost * packQty).toFixed(2);\n\n    variantRows.push({\n      json: {\n        \"LongDesc\": longDesc,\n        \"Customer Price\": customerPrice,\n        \"AMAZON ASIN\": asin,\n        \"PRODUCT TITLE\": productTitle,\n        \"AMAZON URL\": amazonURL || 'NO URL',\n        \"SUPPLIER COST (1 unit)\": supplierCost,\n        \"PACK QTY\": packQty,\n        \"TOTAL COST\": totalCost,\n        \"NOTES\": generateNotes(longDesc, packQty),\n        \n      }\n    });\n  }\n}\n\nreturn variantRows;\n"
+      },
+      "name": "Parse Amazon HTML",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        1104
+      ],
+      "id": "2097c233-ef73-4d32-8b92-2176cb012ac4"
+    },
+    {
+      "parameters": {
+        "functionCode": "const html = $json.data || '';\nlet amazonURL = $json['AMAZON URL'] || '';\n\n// Helper to extract string between two markers\nfunction getBetween(str, start, end) {\n  const s = str.indexOf(start);\n  if (s === -1) return '';\n  const e = str.indexOf(end, s + start.length);\n  if (e === -1) return '';\n  return str.substring(s + start.length, e).trim();\n}\n\n// Clean text\nfunction clean(text) {\n  if (!text) return '';\n  return text.replace(/<[^>]*>/g, '').replace(/\\s+/g, ' ').trim();\n}\n\n// Generate dynamic notes based on product description and pack quantity\nfunction generateNotes(desc, packQty) {\n  desc = desc.toLowerCase();\n\n  if (desc.includes('capsule') || desc.includes('tablet') || desc.includes('oz') || desc.includes('ml')) {\n    const match = desc.match(/(\\d+)\\s?(capsules?|oz|ml|fl\\s?oz)/i);\n    if (match) return `(${match[1]} ${match[2]} = ${packQty} unit${packQty > 1 ? 's' : ''})`;\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  } else if (desc.includes('book')) {\n    return `Pack of ${packQty} copy${packQty > 1 ? 'ies' : ''}`;\n  } else if (desc.includes('phone') || desc.includes('ipad') || desc.includes('laptop')) {\n    return `Pack of ${packQty} device${packQty > 1 ? 's' : ''}`;\n  } else {\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  }\n}\n\n// Extract LongDesc\nlet longDesc = getBetween(html, '<span id=\"productTitle\"', '</span>') ||\n               getBetween(html, '<span class=\"a-size-large product-title-word-break\"', '</span>') ||\n               $json['LongDesc'] || '';\nlongDesc = clean(longDesc);\n\n// Product title short\nlet productTitle = longDesc.split(/,|for/i)[0].trim() || $json['PRODUCT TITLE'];\n\n// Extract ASIN\nlet asin = getBetween(html, 'data-asin=\"', '\"') || '';\nif (!asin && amazonURL) {\n  const match = amazonURL.match(/\\/dp\\/([A-Z0-9]{10})/);\n  if (match) asin = match[1];\n}\n\n// Generate Amazon URL if missing\nif (!amazonURL && asin) amazonURL = `https://www.amazon.com/dp/${asin}`;\n\n// Supplier Cost\nlet supplierCost = Number($json['SUPPLIER COST (1 unit)']) || 8.49;\n\n// Extract Manufacturer, CatgDesc, SubCtDsc\nlet manufacturer = $json['Manufacturer'] || '';\nlet catgDesc = $json['CatgDesc'] || '';\nlet subCtDsc = $json['SubCtDsc'] || '';\n\n// Extract pack variants\nlet variantRows = [];\nconst packMatches = [...html.matchAll(/(\\d+\\s?FL\\s?Oz).*?Pack of (\\d+).*?\\$([\\d.,]+)/gi)];\n\nif (packMatches.length === 0) {\n  // Single variant fallback\n  let customerPrice = parseFloat(($json['Customer Price'] || '').toString().replace(/[^0-9.]/g, '')) || supplierCost;\n  variantRows.push({\n    json: {\n      \"LongDesc\": longDesc,\n      \"Customer Price\": customerPrice.toFixed(2),\n      \"Manufacturer\": manufacturer,\n      \"CatgDesc\": catgDesc,\n      \"SubCtDsc\": subCtDsc,\n      \"AMAZON ASIN\": asin,\n      \"PRODUCT TITLE\": productTitle,\n      \"AMAZON URL\": amazonURL || 'NO URL',\n      \"SUPPLIER COST (1 unit)\": supplierCost,\n      \"PACK QTY\": 1,\n      \"TOTAL COST\": (supplierCost * 1).toFixed(2),\n      \"NOTES\": generateNotes(longDesc, 1)\n    }\n  });\n} else {\n  // Multiple variants\n  for (let i = 0; i < packMatches.length; i++) {\n    const m = packMatches[i];\n    const packQty = Number(m[2]);\n    let customerPrice = parseFloat(m[3].replace(/[^0-9.]/g, ''));\n    if (!customerPrice || isNaN(customerPrice)) {\n      customerPrice = parseFloat(($json['Customer Price'] || '').toString().replace(/[^0-9.]/g, '')) || supplierCost;\n    }\n    const totalCost = (supplierCost * packQty).toFixed(2);\n\n    variantRows.push({\n      json: {\n        \"LongDesc\": longDesc,\n        \"Customer Price\": customerPrice.toFixed(2),\n        \"Manufacturer\": manufacturer,\n        \"CatgDesc\": catgDesc,\n        \"SubCtDsc\": subCtDsc,\n        \"AMAZON ASIN\": asin,\n        \"PRODUCT TITLE\": productTitle,\n        \"AMAZON URL\": amazonURL || 'NO URL',\n        \"SUPPLIER COST (1 unit)\": supplierCost,\n        \"PACK QTY\": packQty,\n        \"TOTAL COST\": totalCost,\n        \"NOTES\": generateNotes(longDesc, packQty)\n      }\n    });\n  }\n}\n\nreturn variantRows;\n"
+      },
+      "name": "Calculate Total Cost1",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        1120
+      ],
+      "id": "d495f983-b6c7-49d0-b9ba-42bd0fe3a78e"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "86159068-3956-49a5-9080-da1bb19e6966",
+              "leftValue": "={{$json[\"PACK QTY\"]}}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1904,
+        1136
+      ],
+      "id": "da0b79ab-bed4-4aa3-a9cc-dfda60c339c9",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0",
+          "mode": "list",
+          "cachedResultName": "VA EXAMPLE SHEET ",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 865783243,
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0/edit#gid=865783243"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "LongDesc": "={{ $json.LongDesc }}",
+            "Customer Price": "={{ $json['Customer Price'] }}",
+            "AMAZON ASIN": "={{ $json['AMAZON ASIN'] }}",
+            "AMAZON URL": "={{ $json['AMAZON URL'] }}",
+            "PRODUCT TITLE": "={{ $json['PRODUCT TITLE'] }}",
+            "SUPPLIER COST (1 unit) ": "={{ $json['SUPPLIER COST (1 unit)'] }}",
+            "PACK QTY": "={{ $json['PACK QTY'] }}",
+            "TOTAL COST": "={{ $json['TOTAL COST'] }}",
+            "NOTES": "={{ $json.NOTES }}"
+          },
+          "matchingColumns": [
+            "LongDesc"
+          ],
+          "schema": [
+            {
+              "id": "Avail",
+              "displayName": "Avail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "LongDesc",
+              "displayName": "LongDesc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Brand",
+              "displayName": "Brand",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Size",
+              "displayName": "Size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Customer Price",
+              "displayName": "Customer Price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Manufacturer",
+              "displayName": "Manufacturer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "CatgDesc",
+              "displayName": "CatgDesc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SubCtDsc",
+              "displayName": "SubCtDsc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "AMAZON ASIN",
+              "displayName": "AMAZON ASIN",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PRODUCT TITLE",
+              "displayName": "PRODUCT TITLE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "AMAZON URL",
+              "displayName": "AMAZON URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SUPPLIER COST (1 unit) ",
+              "displayName": "SUPPLIER COST (1 unit) ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PACK QTY",
+              "displayName": "PACK QTY",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TOTAL COST",
+              "displayName": "TOTAL COST",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "NOTES",
+              "displayName": "NOTES",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SUPPLIER COST (1 unit)",
+              "displayName": "SUPPLIER COST (1 unit)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2144,
+        1152
+      ],
+      "id": "6d4d568c-8a09-4b7e-91a2-97a779dea7a7",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "c9r2JTnKzCZNOGXy",
+          "name": "GoogleSheets_Ollama"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0",
+          "mode": "list",
+          "cachedResultName": "VA EXAMPLE SHEET ",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 865783243,
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0/edit#gid=865783243"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Avail",
+              "displayName": "Avail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "LongDesc",
+              "displayName": "LongDesc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Brand",
+              "displayName": "Brand",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Size",
+              "displayName": "Size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Customer Price",
+              "displayName": "Customer Price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Manufacturer",
+              "displayName": "Manufacturer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "CatgDesc",
+              "displayName": "CatgDesc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SubCtDsc",
+              "displayName": "SubCtDsc",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "AMAZON ASIN",
+              "displayName": "AMAZON ASIN",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PRODUCT TITLE",
+              "displayName": "PRODUCT TITLE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "AMAZON URL",
+              "displayName": "AMAZON URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SUPPLIER COST (1 unit) ",
+              "displayName": "SUPPLIER COST (1 unit) ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PACK QTY",
+              "displayName": "PACK QTY",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TOTAL COST",
+              "displayName": "TOTAL COST",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "NOTES",
+              "displayName": "NOTES",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "SUPPLIER COST (1 unit)",
+              "displayName": "SUPPLIER COST (1 unit)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2176,
+        1360
+      ],
+      "id": "59f7cdee-ea43-4317-9c1b-555abea24768",
+      "name": "Update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "c9r2JTnKzCZNOGXy",
+          "name": "GoogleSheets_Ollama"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Helper function to clean HTML tags and remove leading junk\nfunction cleanText(str) {\n  if (!str) return '';\n  // Remove HTML tags\n  let clean = str.replace(/<[^>]*>/g, '');\n  // Remove any leading class=\"...\"> junk before actual text\n  clean = clean.replace(/^.*?>/, '');\n  // Decode common HTML entities\n  clean = clean.replace(/&amp;/g, '&')\n               .replace(/&quot;/g, '\"')\n               .replace(/&lt;/g, '<')\n               .replace(/&gt;/g, '>')\n               .replace(/&nbsp;/g, ' ')\n               .trim();\n  // Remove extra spaces\n  clean = clean.replace(/\\s+/g, ' ');\n  return clean;\n}\n\n// Process all incoming items\nreturn items.map(item => {\n  const row = item.json;\n\n  // Clean LongDesc\n  row['LongDesc'] = cleanText(row['LongDesc']);\n\n  // Clean PRODUCT TITLE\n  if (row['LongDesc']) {\n    // Take first few words before comma or \"for\" as PRODUCT TITLE\n    row['PRODUCT TITLE'] = row['LongDesc'].split(/,|for/i)[0].trim();\n  } else {\n    row['PRODUCT TITLE'] = cleanText(row['PRODUCT TITLE']);\n  }\n\n  // Ensure numeric values\n  row['SUPPLIER COST (1 unit)'] = Number(row['SUPPLIER COST (1 unit)']) || 0;\n  row['PACK QTY'] = Number(row['PACK QTY']) || 1;\n  row['TOTAL COST'] = (row['SUPPLIER COST (1 unit)'] * row['PACK QTY']).toFixed(2);\n\n  // Update NOTES if needed\n  if (!row['AMAZON ASIN'] || !row['LongDesc']) {\n    row['NOTES'] = 'DOUBLE CHECK';\n  } else if (!row['AMAZON URL']) {\n    row['NOTES'] = 'NO LISTING';\n  }\n\n  return { json: row };\n});\n"
+      },
+      "name": "Calculate Total Cost",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2176,
+        2368
+      ],
+      "id": "c0fe55fc-5d17-485a-a033-9622dc45892f"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": "16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0",
+        "sheetName": "Sheet1",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "LongDesc": "={{ $json.LongDesc }}",
+            "Customer Price": "={{ $json['Customer Price'] }}",
+            "AMAZON ASIN": "={{ $json['AMAZON ASIN'] }}",
+            "AMAZON URL": "={{ $json['AMAZON URL'] }}",
+            "PRODUCT TITLE": "={{ $json['PRODUCT TITLE'] }}",
+            "SUPPLIER COST (1 unit)": "={{ $json['SUPPLIER COST (1 unit)'] }}",
+            "PACK QTY": "={{ $json['PACK QTY'] }}",
+            "TOTAL COST": "={{ $json['TOTAL COST'] }}",
+            "NOTES": "={{ $json.NOTES }}"
+          }
+        },
+        "options": {}
+      },
+      "name": "Append/Update Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        2368,
+        2368
+      ],
+      "id": "ad8d5b8a-e7ce-4d5b-98ef-63645de4c7cf",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "c9r2JTnKzCZNOGXy",
+          "name": "GoogleSheets_Ollama"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "sheetId": "16_uCx9PDlYZFOIaGEp6G16jHUJKuuAibTCBhvcnwBV0",
+        "range": "Sheet1!A1:O",
+        "options": {}
+      },
+      "name": "Read Sheet1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        1168,
+        2368
+      ],
+      "id": "032bc9f2-d684-4e62-ae18-87450748ddfc",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "c9r2JTnKzCZNOGXy",
+          "name": "GoogleSheets_Ollama"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 20,
+        "options": {}
+      },
+      "name": "Split In Batches1",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1376,
+        2368
+      ],
+      "id": "c9a84ae5-315d-4f51-b1d1-ce2be5a05834"
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.filter(i => i.json['AMAZON URL'] && i.json['AMAZON URL'].trim() !== '');"
+      },
+      "name": "Filter Rows with URL1",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1568,
+        2368
+      ],
+      "id": "04eacc3d-8298-4ad5-a1d4-df70d099b014"
+    },
+    {
+      "parameters": {
+        "url": "={{$json['AMAZON URL']}}",
+        "responseFormat": "string",
+        "jsonParameters": true,
+        "options": {},
+        "headerParametersJson": "{\n  \"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36\",\n  \"Accept-Language\": \"en-US,en;q=0.9\",\n  \"Accept\": \"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\",\n  \"Connection\": \"keep-alive\",\n  \"Upgrade-Insecure-Requests\": \"1\",\n  \"Cache-Control\": \"no-cache\"\n}\n"
+      },
+      "name": "Fetch Amazon Info1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        2368
+      ],
+      "id": "34c7bad9-e09b-4de2-8bfb-21ddf829d01f"
+    },
+    {
+      "parameters": {
+        "functionCode": "const html = $json.data || '';\nlet amazonURL = $json['AMAZON URL'] || '';\n\n// Helper to extract string between two markers\nfunction getBetween(str, start, end) {\n  const s = str.indexOf(start);\n  if (s === -1) return '';\n  const e = str.indexOf(end, s + start.length);\n  if (e === -1) return '';\n  return str.substring(s + start.length, e).trim();\n}\n\n// Clean text\nfunction clean(text) {\n  if (!text) return '';\n  return text.replace(/<[^>]*>/g, '').replace(/\\s+/g, ' ').trim();\n}\n\n// Generate dynamic notes based on product description and pack quantity\nfunction generateNotes(desc, packQty) {\n  desc = desc.toLowerCase();\n\n  if (desc.includes('capsule') || desc.includes('tablet') || desc.includes('oz') || desc.includes('ml')) {\n    const match = desc.match(/(\\d+)\\s?(capsules?|oz|ml|fl\\s?oz)/i);\n    if (match) return `(${match[1]} ${match[2]} = ${packQty} unit${packQty > 1 ? 's' : ''})`;\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  } else if (desc.includes('book')) {\n    return `Pack of ${packQty} copy${packQty > 1 ? 'ies' : ''}`;\n  } else if (desc.includes('phone') || desc.includes('ipad') || desc.includes('laptop')) {\n    return `Pack of ${packQty} device${packQty > 1 ? 's' : ''}`;\n  } else {\n    return `Pack of ${packQty} unit${packQty > 1 ? 's' : ''}`;\n  }\n}\n\n// Extract LongDesc\nlet longDesc = getBetween(html, '<span id=\"productTitle\"', '</span>') ||\n               getBetween(html, '<span class=\"a-size-large product-title-word-break\"', '</span>') ||\n               $json['LongDesc'] || '';\nlongDesc = clean(longDesc);\n\n// Product title short\nlet productTitle = longDesc.split(/,|for/i)[0].trim() || $json['PRODUCT TITLE'];\n\n// Extract ASIN\nlet asin = getBetween(html, 'data-asin=\"', '\"') || '';\nif (!asin && amazonURL) {\n  const match = amazonURL.match(/\\/dp\\/([A-Z0-9]{10})/);\n  if (match) asin = match[1];\n}\n\n// Generate Amazon URL if missing\nif (!amazonURL && asin) amazonURL = `https://www.amazon.com/dp/${asin}`;\n\n// Supplier Cost\nlet supplierCost = Number($json['SUPPLIER COST (1 unit)']) || 8.49;\n\n// Extract Manufacturer, CatgDesc, SubCtDsc\nlet manufacturer = $json['Manufacturer'] || '';\nlet catgDesc = $json['CatgDesc'] || '';\nlet subCtDsc = $json['SubCtDsc'] || '';\n\n// Extract pack variants\nlet variantRows = [];\nconst packMatches = [...html.matchAll(/(\\d+\\s?FL\\s?Oz).*?Pack of (\\d+).*?\\$([\\d.,]+)/gi)];\n\nif (packMatches.length === 0) {\n  // Single variant fallback\n  let customerPrice = ($json['Customer Price'] || '').toString().replace(/[^0-9.]/g, '');\n  variantRows.push({\n    json: {\n      \"LongDesc\": longDesc,\n      \"Customer Price\": customerPrice,\n      \"AMAZON ASIN\": asin,\n      \"PRODUCT TITLE\": productTitle,\n      \"AMAZON URL\": amazonURL || 'NO URL',\n      \"SUPPLIER COST (1 unit)\": supplierCost,\n      \"PACK QTY\": 1,\n      \"TOTAL COST\": (supplierCost * 1).toFixed(2),\n      \"NOTES\": generateNotes(longDesc, 1),\n      \"Manufacturer\": manufacturer,\n      \"CatgDesc\": catgDesc,\n      \"SubCtDsc\": subCtDsc\n    }\n  });\n} else {\n  // Multiple variants\n  for (let i = 0; i < packMatches.length; i++) {\n    const m = packMatches[i];\n    const packQty = Number(m[2]);\n    const customerPrice = m[3].replace(/[^0-9.]/g, '');\n    const totalCost = (supplierCost * packQty).toFixed(2);\n\n    variantRows.push({\n      json: {\n        \"LongDesc\": longDesc,\n        \"Customer Price\": customerPrice,\n        \"AMAZON ASIN\": asin,\n        \"PRODUCT TITLE\": productTitle,\n        \"AMAZON URL\": amazonURL || 'NO URL',\n        \"SUPPLIER COST (1 unit)\": supplierCost,\n        \"PACK QTY\": packQty,\n        \"TOTAL COST\": totalCost,\n        \"NOTES\": generateNotes(longDesc, packQty),\n        \n      }\n    });\n  }\n}\n\nreturn variantRows;\n"
+      },
+      "name": "Parse Amazon HTML1",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1968,
+        2368
+      ],
+      "id": "49d1d598-bfe9-49c7-8fd6-4fc104c6210b"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        320,
+        1088
+      ],
+      "id": "bcbfc68b-db49-4d4f-864c-0da3a15b649a",
+      "name": "When clicking ‘Execute workflow’"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Read Sheet": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [
+          {
+            "node": "Filter Rows with URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Rows with URL": {
+      "main": [
+        [
+          {
+            "node": "Fetch Amazon Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Amazon Info": {
+      "main": [
+        [
+          {
+            "node": "Parse Amazon HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Amazon HTML": {
+      "main": [
+        [
+          {
+            "node": "Calculate Total Cost1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Total Cost1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sheet1": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches1": {
+      "main": [
+        [
+          {
+            "node": "Filter Rows with URL1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Rows with URL1": {
+      "main": [
+        [
+          {
+            "node": "Fetch Amazon Info1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Amazon Info1": {
+      "main": [
+        [
+          {
+            "node": "Parse Amazon HTML1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Amazon HTML1": {
+      "main": [
+        [
+          {
+            "node": "Calculate Total Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Total Cost": {
+      "main": [
+        [
+          {
+            "node": "Append/Update Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Read Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "82368ca0-5744-43a9-88ee-ba4a8ace3260",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f3a9bfdfd970a52da47bec8aa69633791c7b34826ee0ab21bab31fa55f8b3b3b"
+  },
+  "id": "ii5eVdbKHagGLkRE",
+  "tags": []
+}
